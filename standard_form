@@ -1,0 +1,397 @@
+# 1. 준비
+
+import os
+
+from time import time
+
+import numpy as np
+
+import pandas as pd
+
+from pandas import read_csv, set_option
+
+
+
+from sklearn.model_selection import cross_val_score, train_test_split, RepeatedStratifiedKFold #, KFold
+
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+
+from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
+
+from sklearn.pipeline import Pipeline
+
+
+
+# model
+
+# linear
+
+from sklearn.linear_model import LogisticRegression
+
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+
+
+# non-linear
+
+from sklearn.naive_bayes import GaussianNB
+
+from sklearn.neighbors import KNeighborsClassifier
+
+from sklearn.svm import SVC
+
+from sklearn.tree import DecisionTreeClassifier
+
+
+
+# ensemble
+
+from sklearn.ensemble import AdaBoostClassifier
+
+from sklearn.ensemble import ExtraTreesClassifier
+
+from sklearn.ensemble import GradientBoostingClassifier
+
+from sklearn.ensemble import RandomForestClassifier
+
+
+
+# Neural lNetwork
+
+from sklearn.neural_network import MLPClassifier
+
+
+
+# XGBoost
+
+from xgboost import XGBClassifier
+
+
+
+# metric
+
+from sklearn.metrics import accuracy_score, roc_auc_score
+
+
+
+# utils
+
+from sklearn.utils import resample, shuffle # imbalanced data를 up/down sampling할 때 사용
+
+
+
+# b) 데이터 로드
+
+data_dir = 'data'
+
+X_train_file = os.path.join(data_dir, 'X_train.csv')
+
+y_train_file = os.path.join(data_dir, 'y_train.csv')
+
+X_test_file = os.path.join(data_dir, 'X_test.csv')
+
+
+
+X_train_df = read_csv(X_train_file)
+
+y_train_df = read_csv(y_train_file)
+
+X_test_df = read_csv(X_test_file)
+
+
+
+# 2. 데이터 분석(시각화는 생략)
+
+# 기술 통계(descriptive statistics)
+
+
+
+print(X_train_df.shape)
+
+print(X_train_df.info())
+
+print(X_train_df.describe())
+
+print(y_train_df.groupby('gender').size())
+
+
+
+print(X_test_df.info())
+
+print(X_test_df.describe())
+
+
+
+# 3 제출 파일 만들기 : 시험을 위한 코드(필수 암기)
+
+exam_num = '0000'
+
+submit_file = exam_num + '.csv'
+
+
+
+col_1_name = 'cust_id'
+
+col_2_name = 'gender'
+
+default_value = 0.5 # 임의의 값을 대입하여 출력하는 경우 0점이라고 합니다.
+
+
+
+col_1 = X_test_df.cust_id
+
+test_row_num = len(X_test_df)
+
+col_2  = np.full(test_row_num, default_value)
+
+
+
+submit = pd.DataFrame({col_1_name:col_1, col_2_name:col_2})
+
+submit.to_csv(submit_file, index=False)
+
+
+
+# 4. 데이터 준비
+
+
+
+# a) 데이터 정제 : 
+
+#   - 결측데이터 처리(환불금액이 없는 데이터를 0으로 변경) 
+
+#   - 이상데이터 제거(총구매액이 음수인 데이터를 제거 하려 하였으나 
+
+#     총구매액이 음수인 데이터가 테스트 데이터에도 있어서 그대로 트레이닝
+
+
+
+train_df = pd.merge(X_train_df, y_train_df)
+
+# train_df = train_df[train_df['총구매액']>=0]
+
+
+
+train_df['환불금액'] = train_df['환불금액'].fillna(0)
+
+X_test_df['환불금액'] = X_test_df['환불금액'].fillna(0)
+
+
+
+X = train_df.drop(['cust_id', 'gender'], axis=1)
+
+y = train_df.gender
+
+X_test = X_test_df.drop(['cust_id'], axis=1)
+
+
+
+# b) 데이터 변환
+
+#  - 범주형 데이터 인코딩(One-Hot Encoding) : 선형 모델의 경우 원핫 인코딩을 해야함, 결정나무 계열은 별 차이 없음
+
+#  - 스케일 변환(Standard or MinMax) : 스케일 변환은 데이터 분리와 관련이 있으므로 파이프라인과 함께 코딩
+
+
+
+# 인코딩
+
+X_encoded = pd.get_dummies(X)
+
+X_test_encoded = pd.get_dummies(X_test)
+
+
+
+lack_cols = set(X_encoded.columns) - set(X_test_encoded.columns)
+
+remain_cols = set(X_test_encoded.columns) - set(X_encoded.columns)
+
+
+
+print(lack_cols)
+
+print(remain_cols)
+
+
+
+# 부족한 컬럼은 0을 값으로 하는 컬럼으로 새로 만들기
+
+for col in lack_cols:
+
+    X_test_encoded[col] = 0
+
+
+
+# 남는 컬럼(테스트 데이터셋에만 있는 컬럼)은 제거
+
+for col in remain_cols:
+
+    X_test_encoded.drop(col, axis=1)
+
+# 약간의 오류가 있습니다. 컬럼의 순서가 달라지므로 컬럼의 순서를 동일하게 맞추어야 합니다.
+
+
+
+### 준비된 데이터 : 인코딩
+
+# 전체 트레이닝 데이터와 라벨 : X_encoded, y
+
+# 전체 테스트 데이터 : X_test_encoded
+
+
+
+# 5. 알고리즘 평가 : 성능이 좋은 알고리즘 찾기
+
+
+
+# a) 테스트 옵션(변수) 설정
+
+seed = 1 # random seed
+
+num_fold = 5
+
+num_repeat = 1
+
+scoring = 'roc_auc'
+
+cv = RepeatedStratifiedKFold(n_splits=num_fold, n_repeats=num_repeat, random_state=seed)
+
+
+
+# b) 데이터 분리 : 트레이닝 데이터와 검증 데이터 분리
+
+X_train, X_valid, y_train, y_valid = train_test_split(X_encoded, y, test_size=0.2, random_state=seed)
+
+
+
+# 데이터를 표준 스케일 변환 후 트레이닝
+
+start_time = time()
+
+scaler = StandardScaler()
+
+#scaler = MinMaxScaler()
+
+pipelines = []
+
+pipelines.append(('ScaledLR', Pipeline([('Scaler', scaler), ('LR', LogisticRegression(solver='liblinear'))])))
+
+pipelines.append(('ScaledLDA', Pipeline([('Scaler', scaler), ('LDA', LinearDiscriminantAnalysis())])))
+
+pipelines.append(('ScaledKNN', Pipeline([('Scaler', scaler), ('KNN', KNeighborsClassifier())])))
+
+pipelines.append(('ScaledNB', Pipeline([('Scaler', scaler), ('NB', GaussianNB())])))
+
+pipelines.append(('ScaledSVM', Pipeline([('Scaler', scaler),('SVM', SVC(gamma='auto'))])))
+
+# pipelines.append(('ScaledSVM', Pipeline([('Scaler', scaler),('SVM', SVC(gamma='auto', class_weight='balanced', probability=True))])))
+
+pipelines.append(('CART', Pipeline([('CART', DecisionTreeClassifier())])))
+
+# ensemble
+
+pipelines.append(('AB', Pipeline([('AB', AdaBoostClassifier())])))
+
+pipelines.append(('GBM', Pipeline([('GBM', GradientBoostingClassifier())])))
+
+pipelines.append(('RF', Pipeline([('RF', RandomForestClassifier())])))
+
+pipelines.append(('ET', Pipeline([('ET', ExtraTreesClassifier())])))
+
+
+
+results = []
+
+names = []
+
+for name, model in pipelines:
+
+    cv_results = cross_val_score(model, X_train, y_train, cv=cv, scoring=scoring)
+
+    # cv_results = cross_val_score(model, upsampled_X, upsampled_y, cv=cv, scoring=scoring)
+
+    # cv_results = cross_val_score(model, downsampled_X, downsampled_y, cv=cv, scoring=scoring)
+
+    
+
+    results.append(cv_results)
+
+    names.append(name)
+
+    
+
+means = []
+
+stds = []
+
+for result in results:
+
+    means.append(result.mean())
+
+    stds.append(result.std())
+
+
+
+results_df = pd.DataFrame({'mean': means, 'std': stds, 'name':names})
+
+print('time : ', time()-start_time)
+
+print(results_df.sort_values('mean', axis=0, ascending=False))
+
+
+
+# 6. 최선의 모델 선택, 위 결과중 가장 성능이 좋은 모델을 선택하여 검증
+
+# valid data로 검증
+
+
+
+# best_model = AdaBoostClassifier()
+
+# best_model = GradientBoostingClassifier()
+
+best_model = Pipeline([('Scaler', scaler), ('LR', LogisticRegression(solver='liblinear'))])
+
+# best_model = RandomForestClassifier(n_estimators=100)
+
+# best_model = ExtraTreesClassifier(n_estimators=200)
+
+# best_model = SVC(gamma='auto', probability=True)
+
+# best_model = LinearDiscriminantAnalysis()
+
+
+
+best_model.fit(X_train, y_train)
+
+best_predict = best_model.predict_proba(X_valid)
+
+best_score = roc_auc_score(y_valid, best_predict[:, 1] )
+
+print('roc auc score : %f' %(best_score))
+
+
+
+# 7. 전체 트레이닝 데이터를 이용하여 다시 트레이닝 및 예측
+
+# 제출용 : 전체 trainind data로 트레이닝을 하고 예측
+
+best_model.fit(X_encoded, y)
+
+submit_predict = best_model.predict_proba(X_test_encoded)
+
+
+
+# 8. 제출 파일 작성 및 제출
+
+submit['gender'] = submit_predict[:, 1]
+
+submit.to_csv(submit_file, index=False)
+
+
+
+# 제출 전 파일 확인
+
+submit_df = read_csv(submit_file)
+
+print(submit_df.head(20)) 
